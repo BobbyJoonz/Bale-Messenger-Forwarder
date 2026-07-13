@@ -5,6 +5,7 @@ import logging
 import sqlite3
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +14,8 @@ try:
     from baleclient import Client, Dispatcher
     from baleclient.enums import ChatType
     from baleclient.types import Message
+
+    # Enable BaleClient internal logging
 
     # Monkey-patch: fix BaleClient bug where string annotations
     # (from __future__ import annotations) cause AttributeError on __name__
@@ -205,6 +208,13 @@ def setup_logging(log_path: Path) -> logging.Logger:
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+    # Also capture BaleClient internal logs
+    bale_logger = logging.getLogger("client")
+    bale_logger.setLevel(logging.DEBUG)
+    bale_logger.addHandler(console)
+    bale_logger.addHandler(file_handler)
+
     return logger
 
 
@@ -400,12 +410,13 @@ async def copy_message(
     """
     Copy text as a new text message and media as a new media/document message.
     For forwarded/embedded messages, use the embedded original content when available.
+    When content is not extractable (bot keyboards etc.), send a notification.
     """
     payload = message
     if not payload.text and not payload.document and payload.replied_to:
         payload = payload.replied_to
 
-    if payload.text is not None:
+    if payload.text is not None and payload.text.strip():
         await client.send_message(
             text=payload.text,
             chat_id=config.target_chat_id,
@@ -423,14 +434,23 @@ async def copy_message(
         )
         return "copied-media"
 
-    if config.copy_fallback_to_forward:
-        await message.forward_to(
-            chat_id=config.target_chat_id,
-            chat_type=config.target_chat_type,
-        )
-        return "forwarded-fallback"
-
-    raise UnsupportedMessageError("Message type cannot be copied.")
+    # Content not extractable (bot keyboard, inline buttons, etc.)
+    # Send a notification instead
+    from datetime import datetime, timezone
+    ts = datetime.fromtimestamp(message.date / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    notification = (
+        f"📨 پیام جدید\n"
+        f"از: {message.chat.id}\n"
+        f"فرستنده: {message.sender_id}\n"
+        f"شناسه: {message.message_id}\n"
+        f"زمان: {ts}"
+    )
+    await client.send_message(
+        text=notification,
+        chat_id=config.target_chat_id,
+        chat_type=config.target_chat_type,
+    )
+    return "notified"
 
 
 async def transfer_message(
@@ -449,9 +469,8 @@ async def transfer_message(
 
 def message_matches(message: Message, config: RelayConfig) -> bool:
     msg_chat_id = int(message.chat.id)
-    msg_chat_type = int(message.chat.type)
     for src_id, src_type in config.sources:
-        if msg_chat_id == src_id and msg_chat_type == int(src_type):
+        if msg_chat_id == src_id:
             if (
                 config.allowed_sender_id is not None
                 and int(message.sender_id) != config.allowed_sender_id
@@ -570,11 +589,6 @@ def main() -> int:
             return
 
         if not store.claim(message):
-            logger.info(
-                "Skipped duplicate message chat=%s message=%s",
-                message.chat.id,
-                message.message_id,
-            )
             return
 
         async with transfer_lock:
@@ -612,6 +626,53 @@ def main() -> int:
                     message.message_id,
                 )
 
+    async def poll_source(client: Client, src_id: int, src_type, config: RelayConfig) -> None:
+        """Poll a single source chat for new messages via load_history."""
+        nonlocal successful_count
+        try:
+            messages = await client.load_history(
+                chat_id=src_id, chat_type=src_type, limit=5
+            )
+        except Exception as exc:
+            logger.warning("Poll failed for %s/%s: %s", src_id, src_type.name, exc)
+            return
+
+        for message in reversed(messages):  # oldest first
+            if not store.claim(message):
+                continue
+
+            async with transfer_lock:
+                try:
+                    action = await transfer_with_retries(client, message, config, logger)
+                    successful_count += 1
+                    logger.info(
+                        "%s | POLL | source=%s/%s | sender=%s | message=%s | target=%s/%s",
+                        action,
+                        src_id,
+                        src_type.name,
+                        message.sender_id,
+                        message.message_id,
+                        config.target_chat_id,
+                        config.target_chat_type.name,
+                    )
+                    if config.delay_seconds:
+                        await asyncio.sleep(config.delay_seconds)
+                except Exception:
+                    store.release(message)
+                    logger.exception(
+                        "Poll transfer failed; message released. chat=%s message=%s",
+                        src_id,
+                        message.message_id,
+                    )
+
+    async def poll_all_sources(client: Client, config: RelayConfig) -> None:
+        """Periodically poll all source chats for new messages."""
+        await asyncio.sleep(5)  # initial delay
+        while True:
+            for src_id, src_type in config.sources:
+                await poll_source(client, src_id, src_type, config)
+            await asyncio.sleep(10)
+
     if args.inspect:
         logger.info(
             "Inspect mode is active. Send a message in the desired source/target chats, "
@@ -634,8 +695,25 @@ def main() -> int:
         "when prompted (example: 98912..., without '+')."
     )
 
+    async def run_with_polling():
+        await client.start(run_in_background=True)
+        if not args.inspect and config is not None:
+            poll_task = asyncio.create_task(poll_all_sources(client, config))
+            logger.info("Polling started for all sources (every 10s)")
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        finally:
+            if not args.inspect and config is not None:
+                poll_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await poll_task
+            await client.stop()
+
     try:
-        client.run()
+        asyncio.run(run_with_polling())
     except KeyboardInterrupt:
         logger.info("Stopped by user.")
     except Exception:
