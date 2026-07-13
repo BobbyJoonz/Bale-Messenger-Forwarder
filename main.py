@@ -47,6 +47,19 @@ try:
         return await loop.run_in_executor(None, wrapped)
     _CO.call = _patched_call
 
+    # Monkey-patch: fix BaleClient bug where MessageContent._check_empty
+    # forcibly strips text content from messages
+    from baleclient.types.message_content import MessageContent as _MC
+    from pydantic import model_validator as _mv
+    @_mv(mode="before")
+    @classmethod
+    def _fixed_check_empty(cls, data):
+        if isinstance(data, dict) and "5" in data:
+            raw_val = data["5"]
+            data["5"] = bool(raw_val) if raw_val is not None else True
+        return data
+    _MC._check_empty = _fixed_check_empty
+
 except ModuleNotFoundError as exc:
     print(
         "Dependency is missing. Run: python -m pip install -r requirements.txt",
