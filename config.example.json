@@ -1,0 +1,24 @@
+{
+  "sources": [
+    {
+      "id": 111111111,
+      "type": "PRIVATE"
+    },
+    {
+      "id": 222222222,
+      "type": "CHANNEL"
+    }
+  ],
+  "target": {
+    "id": 999999999,
+    "type": "PRIVATE"
+  },
+  "mode": "forward",
+  "allowed_sender_id": null,
+  "mark_as_read": false,
+  "copy_fallback_to_forward": true,
+  "delay_seconds": 0.35,
+  "max_retries": 4,
+  "retry_base_seconds": 1.5,
+  "dedupe_max_rows": 20000
+}
