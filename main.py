@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import subprocess
 import sys
 import time
 from contextlib import suppress
@@ -756,6 +757,76 @@ def format_stats_for_admin(store: StateStore, config: RelayConfig) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Feature 4: Admin command helpers
+# ---------------------------------------------------------------------------
+def _save_config_to_disk(updates: dict[str, Any]) -> dict[str, Any]:
+    """Read config.json, merge *updates*, write back, and return the full dict."""
+    config_path = DEFAULT_CONFIG_PATH
+    raw: dict[str, Any] = {}
+    if config_path.exists():
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw.update(updates)
+    config_path.write_text(
+        json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return raw
+
+
+def _parse_chat_type_shortcut(token: str) -> ChatType:
+    """Map short tokens like PV, CH, GR, BOT, SUPER to ChatType enum."""
+    mapping = {
+        "PV": ChatType.PRIVATE,
+        "PRIVATE": ChatType.PRIVATE,
+        "GROUP": ChatType.GROUP,
+        "GR": ChatType.GROUP,
+        "CH": ChatType.CHANNEL,
+        "CHANNEL": ChatType.CHANNEL,
+        "BOT": ChatType.BOT,
+        "SUPER": ChatType.SUPER_GROUP,
+        "SUPER_GROUP": ChatType.SUPER_GROUP,
+    }
+    key = token.strip().upper().replace("-", "_")
+    if key in mapping:
+        return mapping[key]
+    # Try numeric
+    if key.isdigit():
+        return ChatType(int(key))
+    raise ValueError(f"نوع ناشناخته: {token}")
+
+
+def _chat_type_fa(ct: ChatType) -> str:
+    """Return a Persian-friendly label for a ChatType."""
+    names = {
+        ChatType.PRIVATE: "خصوصی",
+        ChatType.GROUP: "گروه",
+        ChatType.CHANNEL: "کانال",
+        ChatType.BOT: "بات",
+        ChatType.SUPER_GROUP: "سوپرگروه",
+    }
+    return names.get(ct, ct.name)
+
+
+def _format_time_ago(iso_str: str) -> str:
+    """Convert an ISO timestamp to a Persian 'X ago' string."""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        delta = datetime.now(tz=timezone.utc) - dt
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs} ثانیه پیش"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} دقیقه پیش"
+        hours = mins // 60
+        if hours < 24:
+            return f"{hours} ساعت پیش"
+        days = hours // 24
+        return f"{days} روز پیش"
+    except Exception:
+        return str(iso_str)
+
+
+# ---------------------------------------------------------------------------
 # Feature 4: Admin command handler
 # ---------------------------------------------------------------------------
 async def handle_admin_command(
@@ -781,33 +852,631 @@ async def handle_admin_command(
     if not text.startswith("/"):
         return False
 
-    command = text.split()[0].lower()
+    parts = text.split()
+    command = parts[0].lower()
+    args = parts[1:]
 
-    if command == "/stats":
-        summary = format_stats_for_admin(store, config)
-        await send_admin_message(client, config, summary, logger)
+    try:
+        # ---- /help ----
+        if command == "/help":
+            help_text = (
+                "📋 دستورات موجود:\n"
+                "\n"
+                "📊 آمار و وضعیت\n"
+                "/stats — آمار رله\n"
+                "/config — تنظیمات فعلی\n"
+                "/sources — لیست مبداها\n"
+                "/targets — لیست مقاصد\n"
+                "\n"
+                "📡 مدیریت مبدا و مقصد\n"
+                "/add <id> <نوع> — اضافه کردن مبدا\n"
+                "/remove <id> — حذف مبدا\n"
+                "/target <id> <نوع> — تنظیم مقصد\n"
+                "/addtarget <id> <نوع> — اضافه کردن مقصد\n"
+                "\n"
+                "🔍 فیلتر کلمات\n"
+                "/filter <کلمه> — اضافه کردن فیلتر\n"
+                "/unfilter <کلمه> — حذف فیلتر\n"
+                "/exclude <کلمه> — اضافه کردن حذف‌کلمه\n"
+                "/unexclude <کلمه> — حذف حذف‌کلمه\n"
+                "/filters — نمایش فیلترها\n"
+                "\n"
+                "🏷 فرمت پیام\n"
+                "/prefix <متن> — پیشوند پیام\n"
+                "/suffix <متن> — پسوند پیام\n"
+                "\n"
+                "⏰ ساعات فعال\n"
+                "/hours <شروع> <پایان> — تنظیم ساعات (UTC)\n"
+                "/hours off — غیرفعال کردن\n"
+                "\n"
+                "🔇 سایر\n"
+                "/silent on/off — حالت سایلنت\n"
+                "/pause — توقف موقت\n"
+                "/resume — ادامه\n"
+                "/logs [تعداد] — آخرین لاگها\n"
+                "/restart — ریستارت سرویس\n"
+                "/webhook <url> — تنظیم وبهوک"
+            )
+            await send_admin_message(client, config, help_text, logger)
 
-    elif command == "/pause":
-        relay_state["paused"] = True
-        await send_admin_message(client, config, "⏸ Relay PAUSED.", logger)
+        # ---- /stats ----
+        elif command == "/stats":
+            stats = store.get_stats()
+            uptime_s = int(time.time() - relay_state["start_time"])
+            hours, remainder = divmod(uptime_s, 3600)
+            minutes, _ = divmod(remainder, 60)
+            status_icon = "⏸" if relay_state.get("paused") else "▶"
+            status_text = "متوقف" if relay_state.get("paused") else "فعال"
 
-    elif command == "/resume":
-        relay_state["paused"] = False
-        await send_admin_message(client, config, "▶ Relay RESUMED.", logger)
+            lines = [
+                f"📊 آمار رله ({status_text} {status_icon}):",
+                f"├ کل رله شده: {stats.get('total_relayed', 0)}",
+                f"├ خطاها: {stats.get('errors', 0)}",
+            ]
+            if stats.get("last_relay_at"):
+                lines.append(f"├ آخرین پیام: {_format_time_ago(stats['last_relay_at'])}")
+            else:
+                lines.append("├ آخرین پیام: —")
+            lines.append(f"└ مدت فعال: {hours} ساعت و {minutes} دقیقه")
 
-    elif command == "/sources":
-        lines = ["📡 Configured sources:"]
-        for sid, stype in config.sources:
-            lines.append(f"  • {sid} ({stype.name})")
-        lines.append("\n🎯 Configured targets:")
-        for tid, ttype in config.all_targets:
-            lines.append(f"  • {tid} ({ttype.name})")
-        await send_admin_message(client, config, "\n".join(lines), logger)
+            if stats.get("by_source"):
+                lines.append("")
+                lines.append("📈 بر اساس مبدا:")
+                for sid, count in stats["by_source"].items():
+                    lines.append(f"  ├ {sid}: {count}")
 
-    else:
+            await send_admin_message(client, config, "\n".join(lines), logger)
+
+        # ---- /config ----
+        elif command == "/config":
+            mode_fa = "کپی" if config.mode == "copy" else "فوروارد"
+            lines = [
+                "⚙️ تنظیمات فعلی:",
+                f"├ حالت: {mode_fa}",
+                f"├ تاخیر: {config.delay_seconds} ثانیه",
+                f"├ حداکثر تلاش: {config.max_retries}",
+                f"├ خواندن پیام: {'✅' if config.mark_as_read else '❌'}",
+                f"├ سایلنت: {'✅' if relay_state.get('silent') or config.silent else '❌'}",
+            ]
+            # Active hours
+            ah = relay_state.get("active_hours") or config.active_hours
+            if ah:
+                if isinstance(ah, dict):
+                    lines.append(f"├ ساعات فعال: {ah['start']}:۰۰ تا {ah['end']}:۰۰ UTC")
+                else:
+                    lines.append(f"├ ساعات فعال: {ah[0]}:۰۰ تا {ah[1]}:۰۰ UTC")
+            else:
+                lines.append("├ ساعات فعال: بدون محدودیت")
+            # Filters
+            kf = relay_state.get("keyword_filter")
+            ke = relay_state.get("keyword_exclude")
+            if kf:
+                lines.append(f"├ فیلتر: {', '.join(kf)}")
+            if ke:
+                lines.append(f"├ حذف‌کلمه: {', '.join(ke)}")
+            # Prefix / suffix
+            mp = relay_state.get("message_prefix")
+            ms = relay_state.get("message_suffix")
+            if mp:
+                lines.append(f"├ پیشوند: {mp}")
+            if ms:
+                lines.append(f"├ پسوند: {ms}")
+            # Webhook
+            wh = config.webhook_url
+            if wh:
+                lines.append(f"├ وبهوک: {wh}")
+            # Admin
+            if config.admin_chat_id:
+                lines.append(f"└ ادمین: {config.admin_chat_id}")
+            else:
+                lines.append("└ ادمین: —")
+
+            await send_admin_message(client, config, "\n".join(lines), logger)
+
+        # ---- /sources ----
+        elif command == "/sources":
+            if not config.sources:
+                await send_admin_message(client, config, "📡 مبدا: (خالی)", logger)
+            else:
+                lines = ["📡 مبداها:"]
+                for i, (sid, stype) in enumerate(config.sources):
+                    connector = "└" if i == len(config.sources) - 1 else "├"
+                    lines.append(f"{connector} {sid} ({ _chat_type_fa(stype) })")
+                await send_admin_message(client, config, "\n".join(lines), logger)
+
+        # ---- /targets ----
+        elif command == "/targets":
+            targets = list(config.all_targets)
+            if not targets:
+                await send_admin_message(client, config, "🎯 مقصد: (خالی)", logger)
+            else:
+                lines = ["🎯 مقاصد:"]
+                for i, (tid, ttype) in enumerate(targets):
+                    connector = "└" if i == len(targets) - 1 else "├"
+                    lines.append(f"{connector} {tid} ({ _chat_type_fa(ttype) })")
+                await send_admin_message(client, config, "\n".join(lines), logger)
+
+        # ---- /add <id> <TYPE> ----
+        elif command == "/add":
+            if len(args) < 2:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /add <شناسه> <نوع>\nمثال: /add 123456 CH",
+                    logger,
+                )
+            else:
+                chat_id = int(args[0])
+                chat_type = _parse_chat_type_shortcut(args[1])
+                # Read current sources from disk
+                raw = {}
+                if DEFAULT_CONFIG_PATH.exists():
+                    raw = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+                sources = raw.get("sources", [])
+                # Check duplicate
+                exists = any(
+                    int(s["id"]) == chat_id and s["type"] == chat_type.name
+                    for s in sources
+                )
+                if exists:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ مبدا {chat_id} ({chat_type.name}) قبلاً وجود دارد.",
+                        logger,
+                    )
+                else:
+                    sources.append({"id": chat_id, "type": chat_type.name})
+                    _save_config_to_disk({"sources": sources})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ مبدا اضافه شد: {chat_id} ({ _chat_type_fa(chat_type) })\n"
+                        "🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                        logger,
+                    )
+
+        # ---- /remove <id> ----
+        elif command == "/remove":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /remove <شناسه>",
+                    logger,
+                )
+            else:
+                chat_id = int(args[0])
+                raw = {}
+                if DEFAULT_CONFIG_PATH.exists():
+                    raw = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+                sources = raw.get("sources", [])
+                new_sources = [s for s in sources if int(s["id"]) != chat_id]
+                if len(new_sources) == len(sources):
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ مبدا {chat_id} پیدا نشد.",
+                        logger,
+                    )
+                else:
+                    _save_config_to_disk({"sources": new_sources})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ مبدا {chat_id} حذف شد.\n"
+                        "🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                        logger,
+                    )
+
+        # ---- /target <id> <TYPE> (replace all targets) ----
+        elif command == "/target":
+            if len(args) < 2:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /target <شناسه> <نوع>\nمثال: /target 987654 CH",
+                    logger,
+                )
+            else:
+                chat_id = int(args[0])
+                chat_type = _parse_chat_type_shortcut(args[1])
+                targets = [{"id": chat_id, "type": chat_type.name}]
+                _save_config_to_disk({"targets": targets})
+                await send_admin_message(
+                    client, config,
+                    f"✅ مقصد تنظیم شد: {chat_id} ({ _chat_type_fa(chat_type) })\n"
+                    "🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                    logger,
+                )
+
+        # ---- /addtarget <id> <TYPE> ----
+        elif command == "/addtarget":
+            if len(args) < 2:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /addtarget <شناسه> <نوع>",
+                    logger,
+                )
+            else:
+                chat_id = int(args[0])
+                chat_type = _parse_chat_type_shortcut(args[1])
+                raw = {}
+                if DEFAULT_CONFIG_PATH.exists():
+                    raw = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+                targets = raw.get("targets", [])
+                exists = any(
+                    int(t["id"]) == chat_id and t["type"] == chat_type.name
+                    for t in targets
+                )
+                if exists:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ مقصد {chat_id} ({chat_type.name}) قبلاً وجود دارد.",
+                        logger,
+                    )
+                else:
+                    targets.append({"id": chat_id, "type": chat_type.name})
+                    _save_config_to_disk({"targets": targets})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ مقصد اضافه شد: {chat_id} ({ _chat_type_fa(chat_type) })\n"
+                        "🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                        logger,
+                    )
+
+        # ---- /filter <keyword> ----
+        elif command == "/filter":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /filter <کلمه>",
+                    logger,
+                )
+            else:
+                keyword = " ".join(args).lower()
+                current = list(relay_state.get("keyword_filter") or [])
+                if keyword in current:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ فیلتر «{keyword}» قبلاً وجود دارد.",
+                        logger,
+                    )
+                else:
+                    current.append(keyword)
+                    relay_state["keyword_filter"] = current
+                    _save_config_to_disk({"keyword_filter": current})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ فیلتر اضافه شد: {keyword}\n"
+                        f"🔍 فیلترهای فعلی: {', '.join(current)}",
+                        logger,
+                    )
+
+        # ---- /unfilter <keyword> ----
+        elif command == "/unfilter":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /unfilter <کلمه>",
+                    logger,
+                )
+            else:
+                keyword = " ".join(args).lower()
+                current = list(relay_state.get("keyword_filter") or [])
+                if keyword not in current:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ فیلتر «{keyword}» پیدا نشد.",
+                        logger,
+                    )
+                else:
+                    current.remove(keyword)
+                    relay_state["keyword_filter"] = current or None
+                    _save_config_to_disk({"keyword_filter": current or None})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ فیلتر حذف شد: {keyword}",
+                        logger,
+                    )
+
+        # ---- /exclude <keyword> ----
+        elif command == "/exclude":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /exclude <کلمه>",
+                    logger,
+                )
+            else:
+                keyword = " ".join(args).lower()
+                current = list(relay_state.get("keyword_exclude") or [])
+                if keyword in current:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ حذف‌کلمه «{keyword}» قبلاً وجود دارد.",
+                        logger,
+                    )
+                else:
+                    current.append(keyword)
+                    relay_state["keyword_exclude"] = current
+                    _save_config_to_disk({"keyword_exclude": current})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ حذف‌کلمه اضافه شد: {keyword}\n"
+                        f"🔍 حذف‌کلمه‌ها: {', '.join(current)}",
+                        logger,
+                    )
+
+        # ---- /unexclude <keyword> ----
+        elif command == "/unexclude":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /unexclude <کلمه>",
+                    logger,
+                )
+            else:
+                keyword = " ".join(args).lower()
+                current = list(relay_state.get("keyword_exclude") or [])
+                if keyword not in current:
+                    await send_admin_message(
+                        client, config,
+                        f"⚠️ حذف‌کلمه «{keyword}» پیدا نشد.",
+                        logger,
+                    )
+                else:
+                    current.remove(keyword)
+                    relay_state["keyword_exclude"] = current or None
+                    _save_config_to_disk({"keyword_exclude": current or None})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ حذف‌کلمه حذف شد: {keyword}",
+                        logger,
+                    )
+
+        # ---- /filters ----
+        elif command == "/filters":
+            kf = relay_state.get("keyword_filter") or (
+                list(config.keyword_filter) if config.keyword_filter else None
+            )
+            ke = relay_state.get("keyword_exclude") or (
+                list(config.keyword_exclude) if config.keyword_exclude else None
+            )
+            lines = ["🔍 فیلترهای فعلی:"]
+            if kf:
+                for i, k in enumerate(kf):
+                    c = "└" if i == len(kf) - 1 else "├"
+                    lines.append(f"  {c} فیلتر: {k}")
+            else:
+                lines.append("  └ فیلتر: (ندارد)")
+            if ke:
+                lines.append("")
+                lines.append("🚫 حذف‌کلمه‌ها:")
+                for i, k in enumerate(ke):
+                    c = "└" if i == len(ke) - 1 else "├"
+                    lines.append(f"  {c} {k}")
+            else:
+                lines.append("  └ حذف‌کلمه: (ندارد)")
+            await send_admin_message(client, config, "\n".join(lines), logger)
+
+        # ---- /prefix <text> ----
+        elif command == "/prefix":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /prefix <متن>\nبرای حذف: /prefix none",
+                    logger,
+                )
+            else:
+                val = " ".join(args)
+                if val.lower() == "none":
+                    relay_state["message_prefix"] = None
+                    _save_config_to_disk({"message_prefix": None})
+                    await send_admin_message(
+                        client, config,
+                        "✅ پیشوند حذف شد.",
+                        logger,
+                    )
+                else:
+                    relay_state["message_prefix"] = val
+                    _save_config_to_disk({"message_prefix": val})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ پیشوند تنظیم شد: {val}",
+                        logger,
+                    )
+
+        # ---- /suffix <text> ----
+        elif command == "/suffix":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /suffix <متن>\nبرای حذف: /suffix none",
+                    logger,
+                )
+            else:
+                val = " ".join(args)
+                if val.lower() == "none":
+                    relay_state["message_suffix"] = None
+                    _save_config_to_disk({"message_suffix": None})
+                    await send_admin_message(
+                        client, config,
+                        "✅ پسوند حذف شد.",
+                        logger,
+                    )
+                else:
+                    relay_state["message_suffix"] = val
+                    _save_config_to_disk({"message_suffix": val})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ پسوند تنظیم شد: {val}",
+                        logger,
+                    )
+
+        # ---- /hours <start> <end> | /hours off ----
+        elif command == "/hours":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده:\n/hours <شروع> <پایان> (ساعت UTC 0-23)\n/hours off",
+                    logger,
+                )
+            elif args[0].lower() == "off":
+                relay_state["active_hours"] = None
+                _save_config_to_disk({"active_hours": None})
+                await send_admin_message(
+                    client, config,
+                    "✅ ساعات فعال غیرفعال شد. رله ۲۴ ساعته فعال است.",
+                    logger,
+                )
+            elif len(args) < 2:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /hours <شروع> <پایان>\nمثال: /hours 8 20",
+                    logger,
+                )
+            else:
+                start_h = int(args[0])
+                end_h = int(args[1])
+                if not (0 <= start_h <= 23 and 0 <= end_h <= 23):
+                    await send_admin_message(
+                        client, config,
+                        "❌ ساعت باید بین ۰ تا ۲۳ باشد.",
+                        logger,
+                    )
+                else:
+                    ah = {"start": start_h, "end": end_h}
+                    relay_state["active_hours"] = ah
+                    _save_config_to_disk({"active_hours": ah})
+                    await send_admin_message(
+                        client, config,
+                        f"✅ ساعات فعال تنظیم شد: {start_h}:۰۰ تا {end_h}:۰۰ UTC",
+                        logger,
+                    )
+
+        # ---- /silent on|off ----
+        elif command == "/silent":
+            if not args or args[0].lower() not in ("on", "off"):
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /silent on یا /silent off",
+                    logger,
+                )
+            else:
+                val = args[0].lower() == "on"
+                relay_state["silent"] = val
+                _save_config_to_disk({"silent": val})
+                label = "فعال" if val else "غیرفعال"
+                await send_admin_message(
+                    client, config,
+                    f"✅ حالت سایلنت {label} شد.",
+                    logger,
+                )
+
+        # ---- /pause ----
+        elif command == "/pause":
+            relay_state["paused"] = True
+            await send_admin_message(
+                client, config,
+                "⏸ رله متوقف شد.",
+                logger,
+            )
+
+        # ---- /resume ----
+        elif command == "/resume":
+            relay_state["paused"] = False
+            await send_admin_message(
+                client, config,
+                "▶ رله ادامه یافت.",
+                logger,
+            )
+
+        # ---- /logs [N] ----
+        elif command == "/logs":
+            n = int(args[0]) if args else 20
+            n = min(max(n, 1), 50)
+            log_path = DEFAULT_CONFIG_PATH.parent / "relay.log"
+            if not log_path.exists():
+                await send_admin_message(
+                    client, config,
+                    "⚠️ فایل لاگ پیدا نشد.",
+                    logger,
+                )
+            else:
+                try:
+                    all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    tail = all_lines[-n:]
+                    if tail:
+                        log_text = "\n".join(tail)
+                        # Telegram message limit ~4096 chars
+                        if len(log_text) > 3800:
+                            log_text = log_text[-3800:]
+                            log_text = "… (trimmed)\n" + log_text
+                        await send_admin_message(
+                            client, config,
+                            f"📜 آخرین {len(tail)} خط لاگ:\n```\n{log_text}\n```",
+                            logger,
+                        )
+                    else:
+                        await send_admin_message(
+                            client, config,
+                            "📜 فایل لاگ خالی است.",
+                            logger,
+                        )
+                except Exception as exc:
+                    await send_admin_message(
+                        client, config,
+                        f"❌ خطا در خواندن لاگ: {exc}",
+                        logger,
+                    )
+
+        # ---- /restart ----
+        elif command == "/restart":
+            await send_admin_message(
+                client, config,
+                "🔄 در حال ریستارت سرویس...",
+                logger,
+            )
+            logger.info("Admin requested restart via /restart command")
+            subprocess.Popen(["systemctl", "restart", "bale-relay"])
+
+        # ---- /webhook <url> | /webhook off ----
+        elif command == "/webhook":
+            if not args:
+                await send_admin_message(
+                    client, config,
+                    "❌ استفاده: /webhook <url>\n/webhook off",
+                    logger,
+                )
+            elif args[0].lower() == "off":
+                _save_config_to_disk({"webhook_url": None})
+                await send_admin_message(
+                    client, config,
+                    "✅ وبهوک غیرفعال شد.\n🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                    logger,
+                )
+            else:
+                url = args[0]
+                _save_config_to_disk({"webhook_url": url})
+                await send_admin_message(
+                    client, config,
+                    f"✅ وبهوک تنظیم شد: {url}\n🔄 تغییرات در ریستارت بعدی اعمال می‌شود.",
+                    logger,
+                )
+
+        # ---- Unknown command ----
+        else:
+            await send_admin_message(
+                client, config,
+                f"❌ دستور ناشناخته: {command}\nبرای لیست دستورات /help را بفرستید.",
+                logger,
+            )
+
+    except ValueError as exc:
         await send_admin_message(
             client, config,
-            "Unknown command. Available: /stats, /pause, /resume, /sources",
+            f"❌ خطا: {exc}",
+            logger,
+        )
+    except Exception as exc:
+        logger.exception("Error handling admin command: %s", command)
+        await send_admin_message(
+            client, config,
+            f"❌ خطای غیرمنتظره: {exc}",
             logger,
         )
 
