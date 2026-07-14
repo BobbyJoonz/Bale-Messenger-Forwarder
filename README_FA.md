@@ -1,73 +1,126 @@
-# 📨 انتقال پیام بله (Bale Messenger Forwarder)
+# 📨 Bale Messenger Forwarder
 
-> انتقال پیام از یک یا چند چت **بله** به یک چت مقصد — با اکانت شخصی بله (یوزربات)
+> انتقال پیام بین چتهای **بله** — چند مبدا، چند مقصد، کنترل کامل از داخل بله
 
-[🇬🇧 English Documentation](README.md)
+[🇬🇧 English](README.md) | [🇮🇷 فارسی](README_FA.md)
 
 ---
 
-## چیکار میکنه؟
+## 🇮🇷 فارسی
 
-این ابزار با **اکانت شخصی بله** شما وارد میشه و چتهای مبدا رو بصورت مداوم رصد میکنه. هر پیام جدیدی که بیاد، کپی (یا فوروارد) میشه به چت مقصد.
+### چیکار میکنه؟
 
-**کاربردها:**
-- جمع‌آوری پیامهای چند ربات PV در یک کانال
-- مانیتور کردن یک کانال و انتقال پستها به چت خودتان
-- پل ارتباطی بین چتهای مختلف بله
+با **اکانت شخصی بله** وارد میشه و پیامهای چتهای مبدا رو **خودکار** به مقصد فوروارد میکنه. همه چیز از داخل خود بله قابل کنترله — بدون نیاز به SSH!
 
-## قابلیتها
+### ✨ قابلیتها
 
 | قابلیت | توضیح |
 |---|---|
-| 🔄 **چند مبدا** | انتقال همزمان از چند چت |
-| 📡 **Push + Polling** | آپدیت لحظه‌ای + پولینگ ۱۰ ثانیه‌ای برای پیام رباتها |
-| 📋 **حالت کپی** | ارسال متن پیام بعنوان پیام جدید (بدون برچسب فوروارد) |
-| ↗️ **حالت فوروارد** | فوروارد واقعی با اطلاعات فرستنده اصلی |
-| 🔁 **تلاش مجدد** | تاخیر تصاعدی در صورت خطا (تا ۴ بار) |
-| 🗄️ **حذف تکرار** | با SQLite — بدون فوروارد تکراری حتی بعد ریستارت |
-| 💾 **ذخیره سشن** | یکبار ورود، بدون نیاز به کد تایید در اجراهای بعدی |
-| 🔍 **حالت بازرسی** | پیدا کردن chat_id و نوع چت بصورت تعاملی |
-| 🛡️ **رفع باگ BaleClient** | پچ‌های داخلی برای باگهای BaleClient 1.0.9 |
-| ⚙️ **سرویس systemd** | شروع خودکار با روشن شدن سرور، ریستارت خودکار در صورت خطا |
+| 🔄 چند مبدا | انتقال همزمان از چند چت |
+| 🎯 چند مقصد | ارسال به چند کانال همزمان |
+| 📡 Push + Polling | آپدیت لحظه‌ای + پولینگ ۱۰ ثانیه‌ای |
+| 📋 کپی / ↗️ فوروارد | دو حالت انتقال |
+| 🔍 فیلتر کلمات | شامل/مستثنی بر اساس کلمه |
+| 🏷 پیشوند/پسوند | اضافه کردن متن به پیام |
+| 👤 ادمین چت | کنترل کامل از داخل بله |
+| ⏰ ساعات فعال | فقط در ساعات خاص |
+| 📊 آمار | ردیابی کامل عملکرد |
+| 🏥 Health check | HTTP endpoint مانیتورینگ |
+| 🔇 سایلنت | ارسال بدون صدا |
+| 🔗 وبهوک | POST به URL خارجی |
+| 🛡 ضدضربه | مدیریت خطا و ریستارت خودکار |
 
-## شروع سریع
-
-### پیش‌نیازها
-
-- Python 3.11 یا جدیدتر
-- یک اکانت بله با دسترسی به چتهای مبدا و مقصد
-
-### ۱. کلون و نصب
+### 🚀 نصب سریع
 
 ```bash
 git clone https://github.com/BobbyJoonz/Bale-Messenger-Forwarder.git
 cd Bale-Messenger-Forwarder
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-### ۲. پیدا کردن شناسه چتها
-
-```bash
+# پیدا کردن chat_id ها
 python main.py --inspect
-```
 
-شماره بله خود را وارد کنید (مثلاً `989121234567` بدون `+`). سپس در هر چت مبدا/مقصد یک پیام بفرستید. ابزار چاپ میکند:
-
-```
-chat_id=123456 | chat_type=PRIVATE | sender_id=789
-```
-
-با `Ctrl+C` تمام کنید.
-
-### ۳. تنظیم
-
-```bash
+# تنظیم (interactive)
 python main.py --setup
+
+# اجرا
+python main.py
+
+# نصب سرویس (لینوکس)
+sudo cp bale-relay.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bale-relay
 ```
 
-یا مستقیماً `config.json` را ویرایش کنید (از `config.example.json` کپی کنید):
+### 📱 دستورات ادمین (از داخل بله)
+
+تنظیم `admin_chat_id` در config.json، سپس:
+
+```
+📊 آمار و وضعیت
+/help          راهنمای دستورات
+/stats         آمار رله
+/config        تنظیمات فعلی
+/sources       لیست مبداها
+/targets       لیست مقاصد
+
+📡 مبدا و مقصد
+/add <id> PV   اضافه کردن مبدا
+/remove <id>   حذف مبدا
+/target <id> CH  تنظیم مقصد
+/addtarget <id>  اضافه کردن مقصد
+
+🔍 فیلتر
+/filter <کلمه>   فیلتر کلمه
+/unfilter <کلمه> حذف فیلتر
+/exclude <کلمه>  حذف کلمه
+/filters         نمایش فیلترها
+
+🏷 فرمت
+/prefix <متن>    پیشوند
+/suffix <متن>    پسوند
+
+⏰ زمان‌بندی
+/hours 8 23      ساعات فعال
+/hours off       ۲۴ ساعته
+
+🔇 کنترل
+/silent on/off   سایلنت
+/pause           توقف موقت
+/resume          ادامه
+/logs            آخرین لاگها
+/restart         ریستارت
+/webhook <url>   تنظیم وبهوک
+```
+
+> **هر تغییری فوری ذخیره و اعمال میشه — بدون نیاز به ریستارت!**
+
+### 📁 ساختار پروژه
+
+```
+Bale-Messenger-Forwarder/
+├── main.py                  # کد اصلی (~۲۱۰۰ خط)
+│   ├── Monkey-patches       # رفع باگهای BaleClient
+│   ├── RelayConfig          # مدیریت تنظیمات
+│   ├── StateStore           # SQLite + آمار
+│   ├── Admin commands       # ۲۰+ دستور ادمین
+│   ├── Push handler         # پردازش لحظه‌ای
+│   ├── Polling engine       # پولینگ ۱۰ ثانیه‌ای
+│   ├── Keyword filter       # فیلتر کلمات
+│   ├── Webhook sender       # ارسال به URL
+│   └── Health server        # HTTP مانیتورینگ
+├── config.example.json      # نمونه تنظیمات
+├── requirements.txt         # وابستگیها
+├── bale-relay.service       # سرویس systemd
+├── run_linux.sh             # اسکریپت لینوکس
+├── run_windows.bat          # اسکریپت ویندوز
+└── README_FA.md             # این فایل
+```
+
+### ⚙️ تنظیمات
+
+`config.example.json` رو کپی کنید به `config.json`:
 
 ```json
 {
@@ -75,146 +128,189 @@ python main.py --setup
     { "id": 111111111, "type": "PRIVATE" },
     { "id": 222222222, "type": "CHANNEL" }
   ],
-  "target": { "id": 999999999, "type": "CHANNEL" },
-  "mode": "copy"
+  "targets": [
+    { "id": 999999999, "type": "CHANNEL" }
+  ],
+  "mode": "copy",
+  "keyword_filter": null,
+  "keyword_exclude": null,
+  "message_prefix": null,
+  "message_suffix": null,
+  "admin_chat_id": null,
+  "active_hours": null,
+  "health_port": null,
+  "silent": false,
+  "webhook_url": null,
+  "log_level": "INFO"
 }
 ```
 
-### ۴. اجرا
-
-```bash
-python main.py
-```
-
-### ۵. نصب بعنوان سرویس (لینوکس)
-
-```bash
-sudo cp bale-relay.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bale-relay
-
-# مشاهده لاگ
-journalctl -u bale-relay -f
-```
-
-## راهنمای تنظیمات
-
-| کلید | نوع | پیشفرض | توضیح |
-|---|---|---|---|
-| `sources` | `آرایه` | — | لیست چتهای مبدا `[{id, type}]` |
-| `source` | `شیء` | — | مبدا تکی (فرمت قدیمی، همچنان کار میکند) |
-| `target` | `شیء` | — | چت مقصد `{id, type}` |
-| `mode` | `رشته` | `"forward"` | `"forward"` یا `"copy"` |
-| `allowed_sender_id` | `عدد\|null` | `null` | فیلتر بر اساس فرستنده؛ `null` = همه |
-| `mark_as_read` | `布尔` | `false` | علامت‌گذاری پیام مبدا بعنوان خوانده‌شده |
-| `copy_fallback_to_forward` | `布尔` | `true` | در حالت کپی، اگر محتوا قابل استخراج نبود فوروارد شود |
-| `delay_seconds` | `اعشاری` | `0.35` | تاخیر بین انتقالها (محافظت در برابر محدودیت) |
-| `max_retries` | `عدد` | `4` | تعداد تلاش مجدد در صورت خطا |
-| `retry_base_seconds` | `اعشاری` | `1.5` | مبنای تاخیر تصاعدی |
-| `dedupe_max_rows` | `عدد` | `20000` | حداکثر سابقه حذف تکرار |
+| کلید | پیشفرض | توضیح |
+|---|---|---|
+| `sources` | — | لیست مبداها `[{id, type}]` |
+| `targets` | — | لیست مقاصد `[{id, type}]` |
+| `source` / `target` | — | فرمت قدیمی (همچنان کار میکنه) |
+| `mode` | `"forward"` | `forward` یا `copy` |
+| `keyword_filter` | `null` | فقط پیامهای شامل این کلمات |
+| `keyword_exclude` | `null` | رد کردن پیامهای شامل این کلمات |
+| `message_prefix` | `null` | متن قبل پیام |
+| `message_suffix` | `null` | متن بعد پیام |
+| `admin_chat_id` | `null` | شناسه چت ادمین |
+| `active_hours` | `null` | `{"start": 8, "end": 23}` |
+| `health_port` | `null` | پورت HTTP |
+| `silent` | `false` | بدون صدا |
+| `webhook_url` | `null` | URL وبهوک |
+| `log_level` | `"INFO"` | سطح لاگ |
 
 ### انواع چت
 
 | مقدار | توضیح |
 |---|---|
-| `PRIVATE` | گفتگوی خصوصی ۱ به ۱ |
-| `BOT` | چت خصوصی ربات (PV) |
-| `GROUP` | گروه ساده |
+| `PRIVATE` / `PV` | خصوصی |
+| `BOT` | ربات |
+| `GROUP` / `GR` | گروه |
+| `CHANNEL` / `CH` | کانال |
 | `SUPER_GROUP` | سوپرگروه |
-| `CHANNEL` | کانال |
 
-> **نکته:** تطابق پیام فقط بر اساس `chat_id` انجام میشود. فیلد `type` برای فراخوانی API استفاده میشود ولی روی تطابق پیام تأثیری ندارد.
-
-## معماری و نحوه کار
-
-```
-┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  چت مبدا     │────▶│  ربات رله بله    │────▶│  چت مقصد     │
-│  (PV ربات)   │     │                  │     │  (کانال)     │
-├──────────────┤     │  ┌────────────┐  │     ├──────────────┤
-│  چت مبدا     │────▶│  │  Polling   │  │────▶│              │
-│  (کانال)     │     │  │  (10 ثانیه)│  │     │              │
-└──────────────┘     │  └────────────┘  │     └──────────────┘
-                     │  ┌────────────┐  │
-                     │  │  Push      │  │
-                     │  │  (لحظه‌ای) │  │
-                     │  └────────────┘  │
-                     └──────────────────┘
-```
-
-1. **حالت Push:** گوش دادن به آپدیتهای لحظه‌ای بله (برای پیامهای کاربران عادی)
-2. **حالت Polling:** هر ۱۰ ثانیه، آخرین پیامها را با `load_history` دریافت میکند (برای پیامهای رباتها که بله push نمیکند)
-3. **حذف تکرار:** هر message_id در SQLite ذخیره میشود — هرگز دوباره فوروارد نمیشود
-4. **کپی vs فوروارد:** کپی متن را بعنوان پیام جدید میفرستد؛ فوروارد از API فوروارد بله استفاده میکند
-
-## گزینه‌های خط فرمان
-
-```
-python main.py [OPTIONS]
-
-  --config PATH     مسیر فایل config JSON (پیشفرض: config.json)
-  --setup           اجرای راهنمای تعاملی تنظیمات
-  --inspect         چاپ chat_id/type/sender برای پیامهای دریافتی
-  --reset-session   حذف سشن ذخیره‌شده
-```
-
-## ساختار پروژه
-
-```
-Bale-Messenger-Forwarder/
-├── main.py                  # کد اصلی برنامه (۷۴۱ خط)
-│   ├── RelayConfig          # کلاس تنظیمات
-│   ├── StateStore           # حذف تکرار با SQLite
-│   ├── Monkey-patches       # رفع باگهای BaleClient 1.0.9
-│   ├── Push handler         # پردازشگر پیام لحظه‌ای
-│   └── Polling engine       # حلقه polling با load_history
-├── config.example.json      # نمونه تنظیمات
-├── requirements.txt         # وابستگیهای پایتون
-├── bale-relay.service       # فایل سرویس systemd
-├── run_linux.sh             # اسکریپت اجرای لینوکس
-├── run_windows.bat          # اسکریپت اجرای ویندوز
-├── README.md                # مستندات انگلیسی
-└── README_FA.md             # این فایل
-```
-
-## رفع باگهای BaleClient
-
-این پروژه شامل پچ‌هایی برای سه باگ `BaleClient==1.0.9` است:
-
-### ۱. خطای string annotation
-متد `CallableObject.call()` با خطای `AttributeError` کرش میکند وقتی handler از `from __future__ import annotations` استفاده کند.
-
-**رفع:** استفاده از `getattr()` برای دسترسی امن به نام annotation.
-
-### ۲. حذف محتوای متن
-ولیدیتور `MessageContent._check_empty()` عمداً `text=None` را برای همه پیامها تنظیم میکند و محتوای واقعی را حذف میکند.
-
-**رفع:** جایگزینی ولیدیتور بطوریکه فقط فلگ `empty` تنظیم شود بدون حذف متن.
-
-### ۳. خطای decode هگز در واکنشها
-تابع `int64.decode_list()` با خطای `ValueError` کرش میکند وقتی بله داده واکنش را بجای رشته هگز، بصورت dict بفرستد.
-
-**رفع:** بستن `fromhex()` در try-except و مدیریت ورودی dict.
-
-## نکات مهم
-
-- از **API غیررسمی و داخلی بله** استفاده میکند — ممکن است با آپدیت بله از کار بیفتد
-- اکانت وارد شده باید به همه چتهای مبدا و مقصد دسترسی داشته باشد
-- پیامهای ربات (کیبورد، دکمه‌های inline) ممکن است محتوای قابل استخراج نداشته باشند
-- فقط روی اکانت و چتهایی استفاده کنید که مالک آنها هستید یا اجازه صریح دارید
-- فایل `account_session.bale` حاوی توکن ورود شماست — **هرگز به اشتراک نگذارید**
-
-## عیب‌یابی
+### 🔧 عیب‌یابی
 
 | مشکل | راه حل |
 |---|---|
-| پیامی فوروارد نمیشود | شناسه چت مبدا را با `--inspect` بررسی کنید |
-| `PermissionDenied` | اکانت اجازه ارسال در چت مقصد ندارد |
-| `InvalidArgument` | نوع چت در config اشتباه است (مثلاً PRIVATE بجای CHANNEL) |
-| متن خالی در پیامهای رله‌شده | باگ BaleClient — خودکار پچ شده |
-| سشن منقضی شده | `--reset-session` اجرا کنید و دوباره وارد شوید |
-| سرویس شروع نمیشود | `journalctl -u bale-relay -n 50` بررسی کنید |
+| پیامی فوروارد نمیشود | `/sources` چک کنید، chat_id درسته؟ |
+| `PermissionDenied` | اکانت اجازه ارسال به مقصد ندارد |
+| متن خالی | باگ BaleClient — خودکار پچ شده |
+| سشن منقضی | `--reset-session` و ورود مجدد |
+| سرویس کرش | `journalctl -u bale-relay -n 50` |
 
-## مجوز
+### ⚠️ نکات مهم
 
-این پروژه از کتابخانه غیررسمی `BaleClient` استفاده میکند. مسئولیت استفاده بر عهده کاربر است.
+- از **API غیررسمی بله** استفاده میکنه
+- فقط روی اکانت خودتان استفاده کنید
+- `account_session.bale` محرمانه است
+
+---
+
+## 🇬🇧 English
+
+### What It Does
+
+Logs into your **personal Bale account** and automatically relays messages from source chats to target chat(s). Everything is controllable from inside Bale via admin commands — no SSH needed!
+
+### ✨ Features
+
+| Feature | Description |
+|---|---|
+| 🔄 Multi-source | Relay from multiple chats simultaneously |
+| 🎯 Multi-target | Send to multiple targets at once |
+| 📡 Push + Polling | Real-time + 10s polling for bot messages |
+| 📋 Copy / ↗️ Forward | Two relay modes |
+| 🔍 Keyword filter | Include/exclude by keywords |
+| 🏷 Prefix/Suffix | Add text before/after messages |
+| 👤 Admin chat | Full control from Bale |
+| ⏰ Active hours | Only relay during specified hours |
+| 📊 Statistics | Track relay performance |
+| 🏥 Health check | HTTP monitoring endpoint |
+| 🔇 Silent mode | Send without notification sound |
+| 🔗 Webhook | POST to external URL |
+| 🛡 Crash-proof | Error handling + auto-restart |
+
+### 🚀 Quick Start
+
+```bash
+git clone https://github.com/BobbyJoonz/Bale-Messenger-Forwarder.git
+cd Bale-Messenger-Forwarder
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Find chat IDs
+python main.py --inspect
+
+# Configure
+python main.py --setup
+
+# Run
+python main.py
+
+# Install as service (Linux)
+sudo cp bale-relay.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bale-relay
+```
+
+### 📱 Admin Commands (from Bale)
+
+Set `admin_chat_id` in config.json, then:
+
+| Command | Description |
+|---|---|
+| `/help` | Show all commands |
+| `/stats` | Relay statistics |
+| `/config` | Current configuration |
+| `/sources` | List sources |
+| `/targets` | List targets |
+| `/add <id> <TYPE>` | Add source |
+| `/remove <id>` | Remove source |
+| `/target <id> <TYPE>` | Set target |
+| `/addtarget <id> <TYPE>` | Add target |
+| `/filter <word>` | Add keyword filter |
+| `/unfilter <word>` | Remove filter |
+| `/exclude <word>` | Add exclude |
+| `/filters` | Show filters |
+| `/prefix <text>` | Set prefix |
+| `/suffix <text>` | Set suffix |
+| `/hours <start> <end>` | Active hours (UTC) |
+| `/hours off` | Disable hours |
+| `/silent on/off` | Silent mode |
+| `/pause` / `/resume` | Pause/resume relay |
+| `/logs` | Last log lines |
+| `/restart` | Restart service |
+| `/webhook <url>` | Set webhook |
+
+> **Changes take effect immediately — no restart needed!**
+
+### ⚙️ Configuration
+
+Copy `config.example.json` to `config.json`:
+
+```json
+{
+  "sources": [
+    { "id": 111111111, "type": "PRIVATE" },
+    { "id": 222222222, "type": "CHANNEL" }
+  ],
+  "targets": [
+    { "id": 999999999, "type": "CHANNEL" }
+  ],
+  "mode": "copy",
+  "keyword_filter": null,
+  "keyword_exclude": null,
+  "message_prefix": null,
+  "message_suffix": null,
+  "admin_chat_id": null,
+  "active_hours": null,
+  "health_port": null,
+  "silent": false,
+  "webhook_url": null,
+  "log_level": "INFO"
+}
+```
+
+### Chat Types
+
+| Value | Description |
+|---|---|
+| `PRIVATE` / `PV` | Private chat |
+| `BOT` | Bot chat |
+| `GROUP` / `GR` | Group |
+| `CHANNEL` / `CH` | Channel |
+| `SUPER_GROUP` | Supergroup |
+
+### ⚠️ Important Notes
+
+- Uses Bale's **unofficial internal API**
+- Only use on accounts you own
+- `account_session.bale` is confidential
+
+### 📄 License
+
+Uses the unofficial `BaleClient` library. Use at your own risk.

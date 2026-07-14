@@ -1,74 +1,122 @@
 # 📨 Bale Messenger Forwarder
 
-> Relay messages from one or more **Bale (بله)** chats to one or more targets — powered by a personal Bale account (userbot).
+> Relay messages between **Bale (بله)** chats — multi-source, multi-target, full control from Bale
 
-[🇮🇷 مستندات فارسی](README_FA.md)
+[🇬🇧 English](README.md) | [🇮🇷 فارسی](README_FA.md)
 
 ---
 
 ## What It Does
 
-This tool logs into your **personal Bale account** and continuously monitors source chats for new messages. When a new message arrives, it copies (or forwards) it to your target chat(s) in real-time.
+Logs into your **personal Bale account** and automatically relays messages from source chats to target chat(s). Control everything from inside Bale with admin commands — no SSH needed!
 
-**Use cases:**
-- Aggregate messages from multiple bot PVs into one channel
-- Monitor a channel and relay its posts to your own chat
-- Bridge between different Bale chats automatically
-- Filter and forward only messages matching keywords
-- Multi-target broadcast
-
-## Features
+## ✨ Features
 
 | Feature | Description |
 |---|---|
-| 🔄 **Multi-source** | Relay from multiple chats simultaneously |
-| 🎯 **Multi-target** | Send to multiple target chats at once |
-| 📡 **Push + Polling** | Real-time push updates + polling fallback for bot messages |
-| 📋 **Copy mode** | Send message text as a new message (no "Forwarded" label) |
-| ↗️ **Forward mode** | Real forward with original sender info |
-| 🔍 **Keyword filter** | Include/exclude messages by keywords |
-| 🏷️ **Prefix/Suffix** | Add custom text before/after relayed messages |
-| 👤 **Admin chat** | Error notifications + stats + commands via Bale |
-| ⏰ **Active hours** | Only relay during specified hours |
-| 📊 **Statistics** | Track relay counts by source, hour, errors |
-| 🏥 **Health check** | HTTP endpoint for monitoring |
-| 🔇 **Silent mode** | Send without notification sound |
-| 🔗 **Webhook** | POST message data to external URL |
-| 🔁 **Auto-retry** | Exponential backoff on failures (up to 4 retries) |
-| 🗄️ **Deduplication** | SQLite-backed — no duplicate forwards even after restart |
-| 💾 **Session persistence** | Login once, stays logged in |
-| 🔍 **Inspect mode** | Discover chat IDs and types interactively |
-| 🛡️ **Bug fixes** | Built-in patches for known BaleClient 1.0.9 bugs |
-| ⚙️ **systemd service** | Auto-start on boot, auto-restart on crash |
+| 🔄 Multi-source | Relay from multiple chats simultaneously |
+| 🎯 Multi-target | Send to multiple targets at once |
+| 📡 Push + Polling | Real-time updates + 10s polling for bot messages |
+| 📋 Copy / ↗️ Forward | Two relay modes |
+| 🔍 Keyword filter | Include/exclude messages by keywords |
+| 🏷 Prefix / Suffix | Add custom text before/after messages |
+| 👤 Admin commands | Full control from Bale (20+ commands) |
+| ⏰ Active hours | Only relay during specified hours |
+| 📊 Statistics | Track relay counts, errors, performance |
+| 🏥 Health check | HTTP monitoring endpoint |
+| 🔇 Silent mode | Send without notification sound |
+| 🔗 Webhook | POST message data to external URL |
+| 🛡 Crash-proof | Graceful error handling + auto-restart |
+| 🗄️ Deduplication | SQLite-backed — no duplicate forwards |
+| 💾 Session persistence | Login once, stays logged in |
 
-## Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- A Bale account with access to source and target chats
-
-### 1. Clone & Install
+## 🚀 Quick Start
 
 ```bash
 git clone https://github.com/BobbyJoonz/Bale-Messenger-Forwarder.git
 cd Bale-Messenger-Forwarder
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+# Find chat IDs
+python main.py --inspect
+
+# Configure interactively
+python main.py --setup
+
+# Run
+python main.py
 ```
 
-### 2. Find Chat IDs
+### Deploy as Service (Linux)
 
 ```bash
-python main.py --inspect
+sudo cp bale-relay.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bale-relay
+
+# View logs
+journalctl -u bale-relay -f
 ```
 
-Enter your phone number, send a message in each chat, copy the printed IDs.
+## 📱 Admin Commands
 
-### 3. Configure
+Set `admin_chat_id` in config.json, then send commands from Bale:
 
-Copy `config.example.json` to `config.json` and edit:
+### Status & Info
+| Command | Description |
+|---|---|
+| `/help` | Show all commands |
+| `/stats` | Relay statistics |
+| `/config` | Current configuration |
+| `/sources` | List configured sources |
+| `/targets` | List configured targets |
+
+### Source & Target Management
+| Command | Description |
+|---|---|
+| `/add <id> <TYPE>` | Add a source chat |
+| `/remove <id>` | Remove a source chat |
+| `/target <id> <TYPE>` | Set target (replaces all) |
+| `/addtarget <id> <TYPE>` | Add additional target |
+
+### Keyword Filtering
+| Command | Description |
+|---|---|
+| `/filter <word>` | Add keyword filter |
+| `/unfilter <word>` | Remove keyword filter |
+| `/exclude <word>` | Add exclude keyword |
+| `/unexclude <word>` | Remove exclude keyword |
+| `/filters` | Show current filters |
+
+### Message Formatting
+| Command | Description |
+|---|---|
+| `/prefix <text>` | Set message prefix |
+| `/suffix <text>` | Set message suffix |
+
+### Scheduling & Control
+| Command | Description |
+|---|---|
+| `/hours <start> <end>` | Set active hours (UTC) |
+| `/hours off` | Disable active hours |
+| `/silent on/off` | Toggle silent mode |
+| `/pause` | Pause relay |
+| `/resume` | Resume relay |
+
+### Service Management
+| Command | Description |
+|---|---|
+| `/logs [N]` | Show last N log lines |
+| `/restart` | Restart the service |
+| `/webhook <url>` | Set webhook URL |
+| `/webhook off` | Disable webhook |
+
+> **All changes take effect immediately — no restart needed!**
+
+## ⚙️ Configuration
+
+Copy `config.example.json` to `config.json`:
 
 ```json
 {
@@ -79,132 +127,55 @@ Copy `config.example.json` to `config.json` and edit:
   "targets": [
     { "id": 999999999, "type": "CHANNEL" }
   ],
-  "mode": "copy"
+  "mode": "copy",
+  "keyword_filter": null,
+  "keyword_exclude": null,
+  "message_prefix": null,
+  "message_suffix": null,
+  "admin_chat_id": null,
+  "active_hours": null,
+  "health_port": null,
+  "silent": false,
+  "webhook_url": null,
+  "log_level": "INFO"
 }
 ```
 
-### 4. Run
+### All Options
 
-```bash
-python main.py
-```
-
-### 5. Deploy as Service (Linux)
-
-```bash
-sudo cp bale-relay.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bale-relay
-journalctl -u bale-relay -f
-```
-
-## Configuration Reference
-
-### Core
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `sources` | `array` | — | Source chats `[{id, type}]` |
-| `source` | `object` | — | Single source (legacy) |
-| `targets` | `array` | — | Target chats `[{id, type}]` |
-| `target` | `object` | — | Single target (legacy) |
-| `mode` | `string` | `"forward"` | `"forward"` or `"copy"` |
-| `allowed_sender_id` | `int\|null` | `null` | Filter by sender |
-| `mark_as_read` | `bool` | `false` | Mark source as read |
-| `copy_fallback_to_forward` | `bool` | `true` | Fallback to forward in copy mode |
-| `delay_seconds` | `float` | `0.35` | Delay between transfers |
-| `max_retries` | `int` | `4` | Retry count |
-| `retry_base_seconds` | `float` | `1.5` | Exponential backoff base |
-| `dedupe_max_rows` | `int` | `20000` | Max dedup history |
-
-### Filtering
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `keyword_filter` | `array\|null` | `null` | Only relay if text contains one of these keywords |
-| `keyword_exclude` | `array\|null` | `null` | Skip if text contains any of these keywords |
-
-### Formatting
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `message_prefix` | `string\|null` | `null` | Prepend to relayed text |
-| `message_suffix` | `string\|null` | `null` | Append to relayed text |
-
-### Admin & Monitoring
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `admin_chat_id` | `int\|null` | `null` | Chat ID for error notifications and commands |
-| `admin_chat_type` | `string` | `"PRIVATE"` | Type of admin chat |
-| `health_port` | `int\|null` | `null` | HTTP health check port |
-| `log_level` | `string` | `"INFO"` | Log level (DEBUG, INFO, WARNING, ERROR) |
-
-### Advanced
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `active_hours` | `object\|null` | `null` | `{"start": 8, "end": 23}` — only relay during these hours (UTC) |
-| `silent` | `bool` | `false` | Send messages without notification sound |
-| `webhook_url` | `string\|null` | `null` | POST message data to this URL |
+| Key | Default | Description |
+|---|---|---|
+| `sources` | — | Source chats `[{id, type}]` |
+| `targets` | — | Target chats `[{id, type}]` |
+| `source` / `target` | — | Legacy single source/target |
+| `mode` | `"forward"` | `"forward"` or `"copy"` |
+| `allowed_sender_id` | `null` | Filter by sender |
+| `mark_as_read` | `false` | Mark source as read |
+| `delay_seconds` | `0.35` | Delay between transfers |
+| `max_retries` | `4` | Retry count |
+| `keyword_filter` | `null` | Include keywords `["word1", "word2"]` |
+| `keyword_exclude` | `null` | Exclude keywords |
+| `message_prefix` | `null` | Prepend to text |
+| `message_suffix` | `null` | Append to text |
+| `admin_chat_id` | `null` | Admin chat for commands |
+| `admin_chat_type` | `"PRIVATE"` | Admin chat type |
+| `active_hours` | `null` | `{"start": 8, "end": 23}` (UTC) |
+| `health_port` | `null` | HTTP health check port |
+| `silent` | `false` | Suppress notifications |
+| `webhook_url` | `null` | Webhook POST URL |
+| `log_level` | `"INFO"` | DEBUG/INFO/WARNING/ERROR |
 
 ### Chat Types
 
-| Value | Description |
-|---|---|
-| `PRIVATE` | 1-on-1 conversation |
-| `BOT` | Bot private chat (PV) |
-| `GROUP` | Basic group |
-| `SUPER_GROUP` | Supergroup |
-| `CHANNEL` | Channel |
+| Value | Short | Description |
+|---|---|---|
+| `PRIVATE` | `PV` | Private chat |
+| `BOT` | — | Bot chat |
+| `GROUP` | `GR` | Group |
+| `CHANNEL` | `CH` | Channel |
+| `SUPER_GROUP` | — | Supergroup |
 
-## Admin Commands
-
-Set `admin_chat_id` in config, then send these commands to your Bale account:
-
-| Command | Description |
-|---|---|
-| `/stats` | Show relay statistics |
-| `/pause` | Pause relay |
-| `/resume` | Resume relay |
-| `/sources` | List configured sources |
-
-## Health Check
-
-Set `health_port` (e.g., `8080`) to enable:
-
-```bash
-curl http://localhost:8080/
-```
-
-Returns:
-```json
-{
-  "status": "running",
-  "uptime_seconds": 3600,
-  "total_relayed": 150,
-  "sources": ["270066638/PRIVATE", "5379211084/CHANNEL"],
-  "last_message_at": "2026-07-14T16:21:54Z"
-}
-```
-
-## Webhook
-
-Set `webhook_url` to receive POST requests for each relayed message:
-
-```json
-{
-  "source_chat_id": 270066638,
-  "source_chat_type": "PRIVATE",
-  "sender_id": 270066638,
-  "message_id": 123456,
-  "text": "message content...",
-  "timestamp": "2026-07-14T16:21:54Z",
-  "action": "copied-text"
-}
-```
-
-## Architecture
+## 🏗 Architecture
 
 ```
 ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
@@ -228,30 +199,52 @@ Set `webhook_url` to receive POST requests for each relayed message:
                      └──────────────────┘
 ```
 
-## CLI Options
-
-```
-python main.py [OPTIONS]
-  --config PATH     Path to config JSON
-  --setup           Interactive setup wizard
-  --inspect         Print chat info for incoming messages
-  --reset-session   Delete login session
-```
-
 ## BaleClient Bug Fixes
 
-Three monkey-patches for BaleClient 1.0.9:
-1. **String annotation crash** — `CallableObject.call()` AttributeError fix
+Three monkey-patches for `BaleClient==1.0.9`:
+1. **String annotation crash** — `CallableObject.call()` fix
 2. **Text content stripped** — `MessageContent._check_empty()` fix
-3. **Hex decode crash** — `int64.decode_list()` ValueError fix
+3. **Hex decode crash** — `int64.decode_list()` fix
 
-## Important Notes
+## 📁 Project Structure
+
+```
+Bale-Messenger-Forwarder/
+├── main.py                  # Application (~2100 lines)
+│   ├── Monkey-patches       # BaleClient bug fixes
+│   ├── RelayConfig          # Configuration management
+│   ├── StateStore           # SQLite + statistics
+│   ├── Admin commands       # 20+ Bale commands
+│   ├── Push handler         # Real-time message handler
+│   ├── Polling engine       # 10s polling loop
+│   ├── Keyword filter       # Include/exclude filtering
+│   ├── Webhook sender       # HTTP POST notifications
+│   └── Health server        # HTTP monitoring
+├── config.example.json      # Example configuration
+├── requirements.txt         # Python dependencies
+├── bale-relay.service       # systemd service
+├── run_linux.sh             # Linux launcher
+├── run_windows.bat          # Windows launcher
+├── README.md                # This file
+└── README_FA.md             # Persian documentation
+```
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| No messages relayed | Check `/sources` — correct IDs? |
+| `PermissionDenied` | Account lacks send permission in target |
+| Empty text | BaleClient bug — auto-patched |
+| Session expired | `--reset-session` + re-login |
+| Service crash | `journalctl -u bale-relay -n 50` |
+
+## ⚠️ Important
 
 - Uses Bale's **unofficial internal API** — may break with updates
-- Bot messages may not have extractable content (keyboards, buttons)
-- Only use on accounts you own or have permission for
+- Only use on accounts you own
 - `account_session.bale` is your login token — **never share it**
 
-## License
+## 📄 License
 
 Uses the unofficial `BaleClient` library. Use at your own risk.
