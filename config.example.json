@@ -11,9 +11,9 @@
   ],
   "target": {
     "id": 999999999,
-    "type": "PRIVATE"
+    "type": "CHANNEL"
   },
-  "mode": "forward",
+  "mode": "copy",
   "allowed_sender_id": null,
   "mark_as_read": false,
   "copy_fallback_to_forward": true,
