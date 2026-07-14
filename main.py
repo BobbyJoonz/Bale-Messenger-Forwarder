@@ -1084,6 +1084,16 @@ def main() -> int:
     async def on_message(message: Message) -> None:
         nonlocal successful_count
 
+        try:
+            return await _handle_message_inner(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Unexpected error in message handler for msg=%s", message.message_id)
+
+    async def _handle_message_inner(message: Message) -> None:
+        nonlocal successful_count
+
         if args.inspect:
             logger.info(
                 "INSPECT | chat_id=%s | chat_type=%s(%s) | sender_id=%s | message_id=%s | %s",
@@ -1262,9 +1272,23 @@ def main() -> int:
     async def poll_all_sources(client: Client, config: RelayConfig) -> None:
         """Periodically poll all source chats for new messages."""
         await asyncio.sleep(5)  # initial delay
+        consecutive_errors = 0
         while True:
-            for src_id, src_type in config.sources:
-                await poll_source(client, src_id, src_type, config)
+            try:
+                for src_id, src_type in config.sources:
+                    await poll_source(client, src_id, src_type, config)
+                consecutive_errors = 0
+            except asyncio.CancelledError:
+                raise  # Don't suppress cancellation
+            except Exception as exc:
+                consecutive_errors += 1
+                backoff = min(60, 10 * (2 ** min(consecutive_errors, 5)))
+                logger.warning(
+                    "Poll loop error #%d: %s — backing off %ds",
+                    consecutive_errors, exc, backoff,
+                )
+                await asyncio.sleep(backoff)
+                continue
             await asyncio.sleep(10)
 
     if args.inspect:
@@ -1312,9 +1336,18 @@ def main() -> int:
     )
 
     async def run_with_polling():
+        stop_event = asyncio.Event()
+
+        # Install our own signal handlers to gracefully shut down
+        import signal as _signal
+        loop = asyncio.get_running_loop()
+        for sig in (_signal.SIGTERM, _signal.SIGINT):
+            loop.add_signal_handler(sig, stop_event.set)
+
         await client.start(run_in_background=True)
 
         health_server = None
+        poll_task = None
         if not args.inspect and config is not None:
             poll_task = asyncio.create_task(poll_all_sources(client, config))
             logger.info("Polling started for all sources (every 10s)")
@@ -1336,25 +1369,31 @@ def main() -> int:
                     logger,
                 )
 
-        try:
-            while True:
-                await asyncio.sleep(3600)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            pass
-        finally:
-            if not args.inspect and config is not None:
-                poll_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await poll_task
-            if health_server is not None:
-                health_server.close()
-                await health_server.wait_closed()
-            await client.stop()
+        # Wait until stop signal — no try/except needed, just wait
+        await stop_event.wait()
+
+        # Clean shutdown sequence
+        logger.info("Shutdown signal received, cleaning up...")
+        if poll_task is not None:
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
+        if health_server is not None:
+            health_server.close()
+            await health_server.wait_closed()
+        await client.stop()
+        logger.info("Clean shutdown complete.")
 
     try:
         asyncio.run(run_with_polling())
     except KeyboardInterrupt:
         logger.info("Stopped by user.")
+    except RuntimeError as exc:
+        if "Event loop stopped" in str(exc):
+            logger.info("Shutdown complete (event loop closed).")
+        else:
+            logger.exception("Unexpected RuntimeError.")
+            return 1
     except Exception:
         logger.exception("Client stopped because of an unexpected error.")
         return 1
