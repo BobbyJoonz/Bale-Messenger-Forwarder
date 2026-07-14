@@ -1,18 +1,13 @@
 {
   "sources": [
-    {
-      "id": 111111111,
-      "type": "PRIVATE"
-    },
-    {
-      "id": 222222222,
-      "type": "CHANNEL"
-    }
+    { "id": 111111111, "type": "PRIVATE" },
+    { "id": 222222222, "type": "CHANNEL" }
   ],
-  "target": {
-    "id": 999999999,
-    "type": "CHANNEL"
-  },
+
+  "targets": [
+    { "id": 999999999, "type": "CHANNEL" }
+  ],
+
   "mode": "copy",
   "allowed_sender_id": null,
   "mark_as_read": false,
@@ -20,5 +15,24 @@
   "delay_seconds": 0.35,
   "max_retries": 4,
   "retry_base_seconds": 1.5,
-  "dedupe_max_rows": 20000
+  "dedupe_max_rows": 20000,
+
+  "keyword_filter": null,
+  "keyword_exclude": null,
+
+  "message_prefix": null,
+  "message_suffix": null,
+
+  "admin_chat_id": null,
+  "admin_chat_type": "PRIVATE",
+
+  "active_hours": null,
+
+  "health_port": null,
+
+  "silent": false,
+
+  "webhook_url": null,
+
+  "log_level": "INFO"
 }
