@@ -12,6 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+
+class PostSendResponseError(RuntimeError):
+    """The server replied after a send, but BaleClient could not parse the reply.
+
+    At this point repeating the request is unsafe: Bale may already have accepted
+    and delivered the message.  Callers must treat this as an ambiguous success
+    (at-most-once delivery), never as a normal retryable failure.
+    """
+
+
 try:
     from baleclient import Client, Dispatcher
     from baleclient.enums import ChatType
@@ -61,6 +71,66 @@ try:
             data["5"] = bool(raw_val) if raw_val is not None else True
         return data
     _MC._check_empty = _fixed_check_empty
+
+    # BaleClient 1.0.9's HTTP transport validates POST responses without the
+    # method_data/client context required by MessageResponse.  Sending succeeds
+    # server-side, response parsing raises afterwards, and naïve retry loops spam
+    # the recipient.  Patch the transport at runtime so upgrades/reinstalls do
+    # not silently reintroduce the bug.
+    from baleclient.client.session.aiohttp import AiohttpSession as _AiohttpSession
+    from baleclient.exceptions import BaleError as _BaleError
+    from baleclient.utils import add_header as _add_header, clean_grpc as _clean_grpc
+
+    async def _patched_http_post(
+        self, method, just_bale_type=False, token=None
+    ):
+        if not self.session or getattr(self.session, "closed", False):
+            import aiohttp as _aiohttp
+            self.session = _aiohttp.ClientSession(proxy=self.proxy)
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Origin": "https://web.bale.ai",
+            "content-type": "application/grpc-web+proto",
+        }
+        headers.update({k[0].upper() + k[1:]: v for k, v in self._get_meta().items()})
+        if token is not None:
+            headers.update(self._build_headers(token))
+
+        url = f"{self.post_url}/{method.__service__}/{method.__method__}"
+        data = method.model_dump(by_alias=True, exclude_none=True)
+        payload = _add_header(self.encoder(data))
+        response = None
+        try:
+            # From this point onward delivery is ambiguous: aiohttp cannot prove
+            # whether bytes reached Bale before a transport/read/decode failure.
+            response = await self.session.post(url=url, headers=headers, data=payload)
+            content = await response.read()
+            grpc_message = response.headers.get("grpc-message")
+            if grpc_message is not None:
+                if just_bale_type:
+                    raise _BaleError(grpc_message, -1)
+                return grpc_message
+            if method.__returning__ is None:
+                return content
+
+            result = self.decoder(_clean_grpc(content))
+            result["method_data"] = method
+            return method.__returning__.model_validate(
+                result, context={"client": self.client}
+            )
+        except _BaleError:
+            # Explicit server rejection is definite, not an ambiguous delivery.
+            raise
+        except Exception as exc:
+            raise PostSendResponseError(
+                f"Bale send outcome is ambiguous after HTTP POST started: {exc}"
+            ) from exc
+        finally:
+            if response is not None:
+                response.release()
+
+    _AiohttpSession.post = _patched_http_post
 
 except ModuleNotFoundError as exc:
     print(
@@ -397,6 +467,21 @@ class StateStore:
         self.connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_stats_action ON relay_stats (action)"
         )
+        # Per-target delivery state: prevents re-sending a message to a target
+        # that already succeeded when another target later fails.
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delivered_targets (
+                chat_id INTEGER NOT NULL,
+                chat_type INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                delivered_at INTEGER NOT NULL,
+                PRIMARY KEY (chat_id, chat_type, message_id, target_id)
+            )
+            """
+        )
         self.connection.commit()
 
     def claim(self, message: Message) -> bool:
@@ -426,6 +511,50 @@ class StateStore:
             (int(message.chat.id), int(message.chat.type), int(message.message_id)),
         )
         self.connection.commit()
+
+    def is_target_delivered(self, message: Message, target_id: int) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM delivered_targets
+            WHERE chat_id = ? AND chat_type = ? AND message_id = ? AND target_id = ?
+            """,
+            (
+                int(message.chat.id),
+                int(message.chat.type),
+                int(message.message_id),
+                int(target_id),
+            ),
+        ).fetchone()
+        return row is not None
+
+    def mark_target_delivered(self, message: Message, target_id: int, action: str) -> None:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO delivered_targets
+                (chat_id, chat_type, message_id, target_id, action, delivered_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(message.chat.id),
+                int(message.chat.type),
+                int(message.message_id),
+                int(target_id),
+                str(action),
+                int(time.time()),
+            ),
+        )
+        self.connection.commit()
+
+    def has_any_target_delivery(self, message: Message) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM delivered_targets
+            WHERE chat_id = ? AND chat_type = ? AND message_id = ?
+            LIMIT 1
+            """,
+            (int(message.chat.id), int(message.chat.type), int(message.message_id)),
+        ).fetchone()
+        return row is not None
 
     def prune(self, max_rows: int) -> None:
         self.connection.execute(
@@ -1639,25 +1768,64 @@ def message_matches(message: Message, config: RelayConfig) -> bool:
     return False
 
 
+def is_ambiguous_post_send_error(exc: BaseException) -> bool:
+    """Return True when retrying could duplicate an already accepted send."""
+    return isinstance(exc, PostSendResponseError)
+
+
+def handle_transfer_failure(store: StateStore, message: Message, exc: BaseException) -> bool:
+    """Release only errors known to be safe to retry; retain ambiguous claims.
+
+    Also retains the source claim if ANY target already received this message,
+    so a later retry does not re-spam completed targets.
+    """
+    if is_ambiguous_post_send_error(exc) or store.has_any_target_delivery(message):
+        return False
+    store.release(message)
+    return True
+
+
 async def transfer_with_retries(
     client: Client,
     message: Message,
     config: RelayConfig,
     logger: logging.Logger,
+    store: Optional[StateStore] = None,
 ) -> str:
     """
     Transfer a message to ALL configured targets with retries per target.
     Returns a summary action string.
+
+    When ``store`` is provided, per-target delivery is persisted so a later
+    retry skips targets that already succeeded (at-most-once multi-target).
     """
     actions = []
     for target_id, target_type in config.all_targets:
+        if store is not None and store.is_target_delivered(message, target_id):
+            actions.append("already-delivered")
+            continue
+
         last_exc: Optional[Exception] = None
         for attempt in range(1, config.max_retries + 1):
             try:
                 action = await transfer_message(client, message, config, target_id, target_type)
+                if store is not None:
+                    store.mark_target_delivered(message, target_id, action)
                 actions.append(action)
                 break
             except Exception as exc:
+                if is_ambiguous_post_send_error(exc):
+                    logger.error(
+                        "Ambiguous post-send response for message %s -> target %s; "
+                        "NOT retrying to prevent duplicate delivery: %s",
+                        message.message_id,
+                        target_id,
+                        exc,
+                    )
+                    if store is not None:
+                        store.mark_target_delivered(message, target_id, "sent-unconfirmed")
+                    actions.append("sent-unconfirmed")
+                    break
                 last_exc = exc
                 if attempt >= config.max_retries:
                     raise
@@ -1805,7 +1973,7 @@ def main() -> int:
 
         async with transfer_lock:
             try:
-                action = await transfer_with_retries(client, message, config, logger)
+                action = await transfer_with_retries(client, message, config, logger, store)
                 successful_count += 1
                 relay_state["last_message_at"] = datetime.now(tz=timezone.utc).isoformat()
 
@@ -1851,13 +2019,13 @@ def main() -> int:
 
                 if config.delay_seconds:
                     await asyncio.sleep(config.delay_seconds)
-            except Exception:
-                store.release(message)
+            except Exception as exc:
+                released = handle_transfer_failure(store, message, exc)
                 # Feature 6: Record error
                 store.record_error(int(message.chat.id))
                 logger.exception(
-                    "Transfer failed permanently; message was released for a later retry. "
-                    "chat=%s message=%s",
+                    "Transfer failed permanently; dedupe claim %s. chat=%s message=%s",
+                    "released for safe retry" if released else "retained to prevent duplicate delivery",
                     message.chat.id,
                     message.message_id,
                 )
@@ -1904,7 +2072,7 @@ def main() -> int:
 
             async with transfer_lock:
                 try:
-                    action = await transfer_with_retries(client, message, config, logger)
+                    action = await transfer_with_retries(client, message, config, logger, store)
                     successful_count += 1
                     relay_state["last_message_at"] = datetime.now(tz=timezone.utc).isoformat()
 
@@ -1928,12 +2096,13 @@ def main() -> int:
 
                     if config.delay_seconds:
                         await asyncio.sleep(config.delay_seconds)
-                except Exception:
-                    store.release(message)
+                except Exception as exc:
+                    released = handle_transfer_failure(store, message, exc)
                     # Feature 6: Record error
                     store.record_error(src_id)
                     logger.exception(
-                        "Poll transfer failed; message released. chat=%s message=%s",
+                        "Poll transfer failed; dedupe claim %s. chat=%s message=%s",
+                        "released for safe retry" if released else "retained to prevent duplicate delivery",
                         src_id,
                         message.message_id,
                     )
